@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: ml-system-dashboards
+    orgId: 1
+    folder: ML System
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    options:
+      path: /var/lib/grafana/dashboards

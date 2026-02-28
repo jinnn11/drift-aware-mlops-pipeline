@@ -1,0 +1,69 @@
+# ----------------------------
+# OS / editor junk
+# ----------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# ----------------------------
+# Environment / local secrets
+# ----------------------------
+.env
+.env.*
+!.env.example
+
+# ----------------------------
+# Python / test / build
+# ----------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+
+# ----------------------------
+# Runtime artifacts (generated)
+# ----------------------------
+mlruns/
+models/
+logs/
+reports/
+data/processed/
+
+# ----------------------------
+# Airflow / local db / pid
+# ----------------------------
+airflow/logs/
+*.db
+*.sqlite
+*.sqlite3
+*.pid
+
+# ----------------------------
+# Logs
+# ----------------------------
+*.log
+
+# ----------------------------
+# Dataset (manual local copy)
+# ----------------------------
+data/raw/*.csv
+!data/raw/.gitkeep
+
+# ----------------------------
+# Keep project media assets tracked
+# ----------------------------
+!docs/screenshots/
+!docs/videos/
+!docs/screenshots/.gitkeep
+!docs/videos/.gitkeep

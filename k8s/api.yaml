@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: ml-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+        - name: api
+          image: your-registry/ml-system-api:latest
+          envFrom:
+            - configMapRef:
+                name: ml-system-env
+            - secretRef:
+                name: ml-system-secrets
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          volumeMounts:
+            - name: model-data
+              mountPath: /app/models
+            - name: logs-data
+              mountPath: /app/logs
+            - name: reports-data
+              mountPath: /app/reports
+      volumes:
+        - name: model-data
+          persistentVolumeClaim:
+            claimName: model-data
+        - name: logs-data
+          persistentVolumeClaim:
+            claimName: logs-data
+        - name: reports-data
+          persistentVolumeClaim:
+            claimName: reports-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: ml-system
+spec:
+  selector:
+    app: api
+  ports:
+    - port: 8000
+      targetPort: 8000
