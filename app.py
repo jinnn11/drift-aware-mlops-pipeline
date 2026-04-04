@@ -135,7 +135,8 @@ def predict(payload: PredictRequest) -> PredictResponse:
     with model_lock:
         probs = MODEL.predict_proba(data[FEATURE_COLUMNS])[:, 1]
 
-    predictions = (probs >= 0.5).astype(int).tolist()
+    threshold = float(MODEL_METADATA.get("optimal_threshold", 0.5))
+    predictions = (probs >= threshold).astype(int).tolist()
     scores = probs.tolist()
 
     request_id = str(uuid.uuid4())

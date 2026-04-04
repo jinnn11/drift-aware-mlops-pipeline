@@ -30,7 +30,7 @@ def test_predict_endpoint_roundtrip(tmp_path, monkeypatch):
 
     joblib.dump(DummyModel(), model_path)
     metadata_path.write_text(
-        json.dumps({"model_version": "dummy-v1", "feature_columns": ["age", "job"]}),
+        json.dumps({"model_version": "dummy-v1", "feature_columns": ["age", "job"], "optimal_threshold": 0.8}),
         encoding="utf-8",
     )
 
@@ -53,4 +53,5 @@ def test_predict_endpoint_roundtrip(tmp_path, monkeypatch):
     body = response.json()
     assert body["model_version"] == "dummy-v1"
     assert len(body["predictions"]) == 2
+    assert [item["label"] for item in body["predictions"]] == [0, 0]
     assert "request_id" in body

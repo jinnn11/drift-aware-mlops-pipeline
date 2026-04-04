@@ -99,6 +99,7 @@ def generate_recession_datasets(
             model,
             x_test[feature_columns],
             y_test,
+            threshold=float(metadata.get("optimal_threshold", 0.5)),
         )
         result["current_model_version"] = metadata.get("model_version", "unknown")
     except FileNotFoundError:

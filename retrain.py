@@ -13,11 +13,23 @@ import pandas as pd
 from src.config import get_settings
 from src.data import load_dataset, prepare_features_and_target, time_ordered_split
 from src.db import get_best_historical_test_auc, get_engine, get_latest_monitor_run, init_db, log_training_run
-from src.evaluation import evaluate_probabilistic_classifier
+from src.evaluation import evaluate_probabilistic_classifier, find_optimal_threshold
 from src.features import build_preprocessor
-from src.modeling import train_with_cv
+from src.modeling import compute_scale_pos_weight, train_with_cv
 from src.policy import should_retrain
 from src.registry import load_promoted_model, save_promoted_model, save_reference_data
+
+
+def _log_metrics(prefix: str, metrics: dict | None) -> None:
+    if metrics is None:
+        return
+
+    for key, value in metrics.items():
+        if key == "confusion_matrix":
+            for cm_key, cm_value in value.items():
+                mlflow.log_metric(f"{prefix}_{cm_key}", cm_value)
+            continue
+        mlflow.log_metric(f"{prefix}_{key}", value)
 
 
 def run_smoke_test(dataset_path: str) -> dict:
@@ -109,32 +121,66 @@ def run_retrain(
 
     train_x, train_y = prepare_features_and_target(combined_df)
     preprocessor = build_preprocessor(train_x)
+    scale_pos_weight = compute_scale_pos_weight(train_y)
     candidate_model, best_params, cv_score = train_with_cv(
         x_train=train_x,
         y_train=train_y,
         preprocessor=preprocessor,
+        scale_pos_weight=scale_pos_weight,
         sample_weight=sample_weights,
     )
 
-    candidate_hist_metrics = evaluate_probabilistic_classifier(candidate_model, historical_split.x_test, historical_split.y_test)
+    candidate_recent_metrics = None
+    recent_eval_x = None
+    recent_eval_y = None
+    if recent_eval_df is not None:
+        recent_eval_x, recent_eval_y = prepare_features_and_target(recent_eval_df)
+
+    threshold_x = recent_eval_x if recent_eval_x is not None else historical_split.x_val
+    threshold_y = recent_eval_y if recent_eval_y is not None else historical_split.y_val
+    candidate_optimal_threshold = find_optimal_threshold(
+        threshold_y,
+        candidate_model.predict_proba(threshold_x)[:, 1],
+    )
+    candidate_hist_metrics = evaluate_probabilistic_classifier(
+        candidate_model,
+        historical_split.x_test,
+        historical_split.y_test,
+        threshold=candidate_optimal_threshold,
+    )
+    if recent_eval_x is not None and recent_eval_y is not None:
+        candidate_recent_metrics = evaluate_probabilistic_classifier(
+            candidate_model,
+            recent_eval_x,
+            recent_eval_y,
+            threshold=candidate_optimal_threshold,
+        )
 
     current_metrics = None
     current_recent_metrics = None
+    current_threshold = 0.5
     try:
         current_model, current_metadata = load_promoted_model(settings.model_path, settings.model_metadata_path)
-        current_metrics = evaluate_probabilistic_classifier(current_model, historical_split.x_test, historical_split.y_test)
+        current_threshold = float(current_metadata.get("optimal_threshold", 0.5))
+        current_metrics = evaluate_probabilistic_classifier(
+            current_model,
+            historical_split.x_test,
+            historical_split.y_test,
+            threshold=current_threshold,
+        )
         current_auc = current_metrics["roc_auc"]
     except FileNotFoundError:
         current_auc = -1.0
         current_metadata = {"model_version": "none"}
         current_model = None
 
-    candidate_recent_metrics = None
-    if recent_eval_df is not None:
-        recent_eval_x, recent_eval_y = prepare_features_and_target(recent_eval_df)
-        candidate_recent_metrics = evaluate_probabilistic_classifier(candidate_model, recent_eval_x, recent_eval_y)
-        if current_model is not None:
-            current_recent_metrics = evaluate_probabilistic_classifier(current_model, recent_eval_x, recent_eval_y)
+    if recent_eval_x is not None and recent_eval_y is not None and current_model is not None:
+        current_recent_metrics = evaluate_probabilistic_classifier(
+            current_model,
+            recent_eval_x,
+            recent_eval_y,
+            threshold=current_threshold,
+        )
 
     historical_best = get_best_historical_test_auc(engine)
     if historical_best is None:
@@ -142,8 +188,8 @@ def run_retrain(
 
     if candidate_recent_metrics is not None and current_recent_metrics is not None:
         improved_recent = (
-            candidate_recent_metrics["roc_auc"]
-            >= current_recent_metrics["roc_auc"] + settings.retrain_improvement_threshold
+            candidate_recent_metrics["pr_auc"]
+            >= current_recent_metrics["pr_auc"] + settings.retrain_improvement_threshold
         )
         base_guard = candidate_hist_metrics["roc_auc"] >= (
             current_metrics["roc_auc"] - settings.degradation_threshold
@@ -168,17 +214,17 @@ def run_retrain(
         mlflow.log_param("historical_rows", len(historical_df))
         mlflow.log_param("recent_rows", len(recent_train_df) if recent_train_df is not None else 0)
         mlflow.log_param("recent_weight", float(new_data_weight))
+        mlflow.log_param("scale_pos_weight", scale_pos_weight)
         for key, value in best_params.items():
             mlflow.log_param(key, value)
 
         mlflow.log_metric("cv_roc_auc", cv_score)
-        mlflow.log_metric("candidate_hist_test_roc_auc", candidate_hist_metrics["roc_auc"])
+        mlflow.log_metric("candidate_optimal_threshold", candidate_optimal_threshold)
+        _log_metrics("candidate_hist_test", candidate_hist_metrics)
         if current_auc >= 0:
-            mlflow.log_metric("current_hist_test_roc_auc", current_auc)
-        if candidate_recent_metrics is not None:
-            mlflow.log_metric("candidate_recent_test_roc_auc", candidate_recent_metrics["roc_auc"])
-        if current_recent_metrics is not None:
-            mlflow.log_metric("current_recent_test_roc_auc", current_recent_metrics["roc_auc"])
+            _log_metrics("current_hist_test", current_metrics)
+        _log_metrics("candidate_recent_test", candidate_recent_metrics)
+        _log_metrics("current_recent_test", current_recent_metrics)
         mlflow.log_metric("accepted", 1 if accepted else 0)
 
         mlflow.sklearn.log_model(candidate_model, artifact_path="model_candidate")
@@ -190,6 +236,8 @@ def run_retrain(
                 "feature_columns": train_x.columns.tolist(),
                 "best_params": best_params,
                 "cv_roc_auc": cv_score,
+                "scale_pos_weight": scale_pos_weight,
+                "optimal_threshold": candidate_optimal_threshold,
                 "historical_test_metrics": candidate_hist_metrics,
                 "recent_unseen_test_metrics": candidate_recent_metrics,
                 "mlflow_run_id": run.info.run_id,
@@ -219,20 +267,24 @@ def run_retrain(
                 test_roc_auc=chosen_test_auc,
             )
 
-    improvement_recent = None
+    improvement_recent_roc_auc = None
+    improvement_recent_pr_auc = None
     if candidate_recent_metrics is not None and current_recent_metrics is not None:
-        improvement_recent = candidate_recent_metrics["roc_auc"] - current_recent_metrics["roc_auc"]
+        improvement_recent_roc_auc = candidate_recent_metrics["roc_auc"] - current_recent_metrics["roc_auc"]
+        improvement_recent_pr_auc = candidate_recent_metrics["pr_auc"] - current_recent_metrics["pr_auc"]
 
     return {
         "status": "accepted" if accepted else "rejected",
         "current_model_version": current_metadata.get("model_version", "none"),
         "candidate_model_version": model_version,
         "training_mode": training_mode,
+        "candidate_optimal_threshold": candidate_optimal_threshold,
         "current_historical_test_metrics": current_metrics,
         "candidate_historical_test_metrics": candidate_hist_metrics,
         "current_recent_unseen_metrics": current_recent_metrics,
         "candidate_recent_unseen_metrics": candidate_recent_metrics,
-        "recent_unseen_roc_auc_delta": improvement_recent,
+        "recent_unseen_roc_auc_delta": improvement_recent_roc_auc,
+        "recent_unseen_pr_auc_delta": improvement_recent_pr_auc,
     }
 
 

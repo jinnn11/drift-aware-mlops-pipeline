@@ -11,11 +11,19 @@ import mlflow.sklearn
 from src.config import get_settings
 from src.data import load_dataset, prepare_features_and_target, time_ordered_split, validate_dataset
 from src.db import get_engine, init_db, log_training_run
-from src.evaluation import evaluate_probabilistic_classifier
+from src.evaluation import evaluate_probabilistic_classifier, find_optimal_threshold
 from src.features import build_preprocessor
-from src.modeling import train_with_cv
+from src.modeling import compute_scale_pos_weight, train_with_cv
 from src.registry import save_promoted_model, save_reference_data
 
+
+def _log_metrics(prefix: str, metrics: dict) -> None:
+    for key, value in metrics.items():
+        if key == "confusion_matrix":
+            for cm_key, cm_value in value.items():
+                mlflow.log_metric(f"{prefix}_{cm_key}", cm_value)
+            continue
+        mlflow.log_metric(f"{prefix}_{key}", value)
 
 
 def run_training(dataset_path: str, validate_only: bool = False) -> dict:
@@ -31,10 +39,20 @@ def run_training(dataset_path: str, validate_only: bool = False) -> dict:
     split = time_ordered_split(x, y)
 
     preprocessor = build_preprocessor(split.x_train)
-    best_model, best_params, cv_score = train_with_cv(split.x_train, split.y_train, preprocessor)
+    scale_pos_weight = compute_scale_pos_weight(split.y_train)
+    best_model, best_params, cv_score = train_with_cv(
+        split.x_train,
+        split.y_train,
+        preprocessor,
+        scale_pos_weight=scale_pos_weight,
+    )
 
-    val_metrics = evaluate_probabilistic_classifier(best_model, split.x_val, split.y_val)
-    test_metrics = evaluate_probabilistic_classifier(best_model, split.x_test, split.y_test)
+    optimal_threshold = find_optimal_threshold(
+        split.y_val,
+        best_model.predict_proba(split.x_val)[:, 1],
+    )
+    val_metrics = evaluate_probabilistic_classifier(best_model, split.x_val, split.y_val, threshold=optimal_threshold)
+    test_metrics = evaluate_probabilistic_classifier(best_model, split.x_test, split.y_test, threshold=optimal_threshold)
 
     mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
     mlflow.set_experiment(settings.mlflow_experiment_name)
@@ -47,16 +65,14 @@ def run_training(dataset_path: str, validate_only: bool = False) -> dict:
         mlflow.log_param("train_rows", len(split.x_train))
         mlflow.log_param("val_rows", len(split.x_val))
         mlflow.log_param("test_rows", len(split.x_test))
+        mlflow.log_param("scale_pos_weight", scale_pos_weight)
         for key, value in best_params.items():
             mlflow.log_param(key, value)
 
         mlflow.log_metric("cv_roc_auc", cv_score)
-        mlflow.log_metric("val_roc_auc", val_metrics["roc_auc"])
-        mlflow.log_metric("val_pr_auc", val_metrics["pr_auc"])
-        mlflow.log_metric("val_brier", val_metrics["brier"])
-        mlflow.log_metric("test_roc_auc", test_metrics["roc_auc"])
-        mlflow.log_metric("test_pr_auc", test_metrics["pr_auc"])
-        mlflow.log_metric("test_brier", test_metrics["brier"])
+        mlflow.log_metric("optimal_threshold", optimal_threshold)
+        _log_metrics("val", val_metrics)
+        _log_metrics("test", test_metrics)
 
         mlflow.sklearn.log_model(best_model, artifact_path="model")
 
@@ -69,6 +85,7 @@ def run_training(dataset_path: str, validate_only: bool = False) -> dict:
             json.dumps(
                 {
                     "cv_roc_auc": cv_score,
+                    "optimal_threshold": optimal_threshold,
                     "val": val_metrics,
                     "test": test_metrics,
                 },
@@ -85,6 +102,8 @@ def run_training(dataset_path: str, validate_only: bool = False) -> dict:
             "feature_columns": split.x_train.columns.tolist(),
             "best_params": best_params,
             "cv_roc_auc": cv_score,
+            "scale_pos_weight": scale_pos_weight,
+            "optimal_threshold": optimal_threshold,
             "val_metrics": val_metrics,
             "test_metrics": test_metrics,
             "mlflow_run_id": run.info.run_id,
@@ -117,8 +136,9 @@ def run_training(dataset_path: str, validate_only: bool = False) -> dict:
         "status": "trained",
         "model_version": model_version,
         "cv_roc_auc": cv_score,
-        "val_roc_auc": val_metrics["roc_auc"],
-        "test_roc_auc": test_metrics["roc_auc"],
+        "optimal_threshold": optimal_threshold,
+        "val_metrics": val_metrics,
+        "test_metrics": test_metrics,
     }
 
 

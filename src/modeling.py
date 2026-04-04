@@ -18,12 +18,21 @@ DEFAULT_PARAM_GRID = {
 
 
 
-def build_xgboost_pipeline(preprocessor) -> Pipeline:
+def compute_scale_pos_weight(y_train) -> float:
+    positive_count = int((y_train == 1).sum())
+    negative_count = int((y_train == 0).sum())
+    if positive_count == 0:
+        return 1.0
+    return float(negative_count / positive_count)
+
+
+def build_xgboost_pipeline(preprocessor, scale_pos_weight: float = 1.0) -> Pipeline:
     model = XGBClassifier(
         objective="binary:logistic",
         eval_metric="logloss",
         random_state=42,
         n_jobs=-1,
+        scale_pos_weight=float(scale_pos_weight),
     )
     return Pipeline(
         steps=[
@@ -39,9 +48,13 @@ def train_with_cv(
     preprocessor,
     param_grid: Dict | None = None,
     cv_splits: int = 3,
+    scale_pos_weight: float | None = None,
     sample_weight=None,
 ) -> Tuple[Pipeline, Dict, float]:
-    pipeline = build_xgboost_pipeline(preprocessor)
+    pipeline = build_xgboost_pipeline(
+        preprocessor,
+        scale_pos_weight=1.0 if scale_pos_weight is None else scale_pos_weight,
+    )
     grid = param_grid or DEFAULT_PARAM_GRID
     cv = TimeSeriesSplit(n_splits=cv_splits)
 
