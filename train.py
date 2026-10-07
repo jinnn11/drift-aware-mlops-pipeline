@@ -14,6 +14,7 @@ from src.db import get_engine, init_db, log_training_run
 from src.evaluation import evaluate_probabilistic_classifier, find_optimal_threshold
 from src.features import build_preprocessor
 from src.modeling import compute_scale_pos_weight, train_with_cv
+from src.mlflow_registry import MlflowChampionRegistry
 from src.registry import save_promoted_model, save_reference_data
 
 
@@ -109,6 +110,8 @@ def run_training(dataset_path: str, validate_only: bool = False) -> dict:
             "mlflow_run_id": run.info.run_id,
         }
 
+        mlflow.log_dict(metadata, "model_metadata.json")
+
         save_promoted_model(
             best_model,
             settings.model_path,
@@ -132,9 +135,14 @@ def run_training(dataset_path: str, validate_only: bool = False) -> dict:
             test_roc_auc=test_metrics["roc_auc"],
         )
 
+    registry = MlflowChampionRegistry(settings.mlflow_registered_model_name)
+    registry_version = registry.register_run(run.info.run_id)
+    registry.promote(registry_version)
+
     return {
         "status": "trained",
         "model_version": model_version,
+        "registry_version": registry_version,
         "cv_roc_auc": cv_score,
         "optimal_threshold": optimal_threshold,
         "val_metrics": val_metrics,

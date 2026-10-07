@@ -145,6 +145,14 @@ def log_training_run(
 
 
 
+def get_latest_training_ts(engine: Engine) -> Optional[datetime]:
+    stmt = select(training_runs.c.ts).order_by(training_runs.c.ts.desc()).limit(1)
+    with engine.begin() as conn:
+        row = conn.execute(stmt).first()
+    return row[0] if row else None
+
+
+
 def get_best_historical_test_auc(engine: Engine) -> Optional[float]:
     stmt = select(training_runs.c.test_roc_auc).order_by(training_runs.c.test_roc_auc.desc()).limit(1)
     with engine.begin() as conn:

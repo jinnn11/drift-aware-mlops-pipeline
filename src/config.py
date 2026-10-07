@@ -19,6 +19,7 @@ class Settings:
 
     mlflow_tracking_uri: str = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
     mlflow_experiment_name: str = os.getenv("MLFLOW_EXPERIMENT_NAME", "bank_marketing_xgboost")
+    mlflow_registered_model_name: str = os.getenv("MLFLOW_REGISTERED_MODEL_NAME", "bank_marketing_xgboost")
 
     database_url: str = os.getenv(
         "DATABASE_URL",
@@ -28,6 +29,8 @@ class Settings:
     drift_threshold: float = float(os.getenv("DRIFT_THRESHOLD", "0.30"))
     retrain_improvement_threshold: float = float(os.getenv("RETRAIN_IMPROVEMENT_THRESHOLD", "0.005"))
     degradation_threshold: float = float(os.getenv("DEGRADATION_THRESHOLD", "0.03"))
+    retrain_cooldown_hours: float = float(os.getenv("RETRAIN_COOLDOWN_HOURS", "48"))
+    min_new_labeled_rows: int = int(os.getenv("MIN_NEW_LABELED_ROWS", "1000"))
 
     api_host: str = os.getenv("API_HOST", "0.0.0.0")
     api_port: int = int(os.getenv("API_PORT", "8000"))

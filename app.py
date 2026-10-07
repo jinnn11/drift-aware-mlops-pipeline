@@ -117,6 +117,16 @@ def health() -> dict:
     return {"status": "ok", "model_loaded": model_loaded, "model_version": model_version}
 
 
+@app.post("/reload")
+def reload_model() -> dict:
+    """Re-read the promoted model from disk, e.g. after `python rollback.py --restore-serving-files`."""
+    with model_lock:
+        loaded = _try_load_model()
+    if not loaded:
+        raise HTTPException(status_code=503, detail="Model not found on disk")
+    return {"status": "reloaded", "model_version": MODEL_METADATA.get("model_version", "unknown")}
+
+
 @app.post("/predict", response_model=PredictResponse)
 def predict(payload: PredictRequest) -> PredictResponse:
     REQUEST_COUNTER.inc()

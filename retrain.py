@@ -12,11 +12,20 @@ import pandas as pd
 
 from src.config import get_settings
 from src.data import load_dataset, prepare_features_and_target, time_ordered_split
-from src.db import get_best_historical_test_auc, get_engine, get_latest_monitor_run, init_db, log_training_run
+from src.db import (
+    get_best_historical_test_auc,
+    get_engine,
+    get_latest_monitor_run,
+    get_latest_training_ts,
+    init_db,
+    log_training_run,
+)
 from src.evaluation import evaluate_probabilistic_classifier, find_optimal_threshold
 from src.features import build_preprocessor
 from src.modeling import compute_scale_pos_weight, train_with_cv
+from src.mlflow_registry import MlflowChampionRegistry
 from src.policy import should_retrain
+from src.promotion import GateConfig, NoiseGuardConfig, check_noise_guard, evaluate_gate
 from src.registry import load_promoted_model, save_promoted_model, save_reference_data
 
 
@@ -107,6 +116,23 @@ def run_retrain(
             recent_full_df = load_dataset(str(path_obj))
             recent_train_df, recent_eval_df = _split_recent_labeled_data(recent_full_df, new_data_holdout_ratio)
 
+    if not force:
+        # Noise guard: no retrain within the cooldown after the last promotion, and none
+        # without enough newly labeled rows to learn from.
+        last_trained = get_latest_training_ts(engine)
+        hours_since = None
+        if last_trained is not None:
+            if last_trained.tzinfo is None:
+                last_trained = last_trained.replace(tzinfo=timezone.utc)
+            hours_since = (datetime.now(timezone.utc) - last_trained).total_seconds() / 3600
+        allowed, guard_reason = check_noise_guard(
+            periods_since_last_retrain=hours_since,
+            new_labeled_rows=0 if recent_train_df is None else len(recent_train_df) + len(recent_eval_df),
+            config=NoiseGuardConfig(settings.retrain_cooldown_hours, settings.min_new_labeled_rows),
+        )
+        if not allowed:
+            return {"status": "skipped", "reason": guard_reason, "hours_since_last_promotion": hours_since}
+
     if recent_train_df is not None:
         combined_df, sample_weights = _combine_historical_and_recent(
             historical_df=historical_df,
@@ -186,15 +212,19 @@ def run_retrain(
     if historical_best is None:
         historical_best = current_auc if current_auc >= 0 else candidate_hist_metrics["roc_auc"]
 
+    gate_reason = None
     if candidate_recent_metrics is not None and current_recent_metrics is not None:
-        improved_recent = (
-            candidate_recent_metrics["pr_auc"]
-            >= current_recent_metrics["pr_auc"] + settings.retrain_improvement_threshold
+        # Promotion gate: beat the champion on the newest labeled data (PR-AUC) without
+        # getting worse on the older held-out test set (ROC-AUC).
+        decision = evaluate_gate(
+            champion_recent=current_recent_metrics["pr_auc"],
+            candidate_recent=candidate_recent_metrics["pr_auc"],
+            champion_older=current_metrics["roc_auc"],
+            candidate_older=candidate_hist_metrics["roc_auc"],
+            config=GateConfig(settings.retrain_improvement_threshold, settings.degradation_threshold),
         )
-        base_guard = candidate_hist_metrics["roc_auc"] >= (
-            current_metrics["roc_auc"] - settings.degradation_threshold
-        )
-        accepted = (current_auc < 0) or (improved_recent and base_guard)
+        gate_reason = decision.reason
+        accepted = decision.promote
     else:
         improved_enough = candidate_hist_metrics["roc_auc"] >= current_auc + settings.retrain_improvement_threshold
         degraded_current = (historical_best - current_auc) >= settings.degradation_threshold
@@ -227,7 +257,16 @@ def run_retrain(
         _log_metrics("current_recent_test", current_recent_metrics)
         mlflow.log_metric("accepted", 1 if accepted else 0)
 
+        if gate_reason is not None:
+            mlflow.set_tag("gate", gate_reason)
         mlflow.sklearn.log_model(candidate_model, artifact_path="model_candidate")
+
+        # Every candidate is registered for the audit trail; only an accepted one takes the
+        # `champion` alias (the old champion becomes `previous_champion`, see rollback.py).
+        registry = MlflowChampionRegistry(settings.mlflow_registered_model_name)
+        registry_version = registry.register_run(run.info.run_id, artifact_path="model_candidate")
+        if accepted:
+            registry.promote(registry_version)
 
         if accepted:
             metadata = {
@@ -246,6 +285,7 @@ def run_retrain(
                 "training_mode": training_mode,
                 "recent_weight": float(new_data_weight),
             }
+            mlflow.log_dict(metadata, "model_metadata.json")
             save_promoted_model(candidate_model, settings.model_path, settings.model_metadata_path, metadata)
 
             reference_df = train_x.copy()
@@ -275,6 +315,8 @@ def run_retrain(
 
     return {
         "status": "accepted" if accepted else "rejected",
+        "gate_reason": gate_reason,
+        "registry_version": registry_version,
         "current_model_version": current_metadata.get("model_version", "none"),
         "candidate_model_version": model_version,
         "training_mode": training_mode,
