@@ -1,44 +1,37 @@
-# DRIFT-AWARE MLOps PIPELINE
+# Drift-aware retraining: an experiment
 
-Production-style MLOps project for binary classification on UCI Bank Marketing, with online serving, drift monitoring, and conditional retraining.
+**Question:** when labels arrive late, does retraining when drift is detected beat retraining on a fixed schedule, and at what cost?
 
-## Impact
+On 36 months of Lending Club loans (2013–2015), replayed month by month with labels arriving 1, 3 or 6 months late, **drift-triggered retraining did not beat a schedule**:
 
-- Built a full ML lifecycle system: training, registry, serving, monitoring, retraining, and promotion gates.
-- Implemented drift-triggered retraining with **weighted recent data** to adapt to distribution shifts.
-- Current promoted model maintains solid in-distribution performance on the original test set:
-  - ROC-AUC: **0.7495**
-  - PR-AUC: **0.6644**
-  - F1: **0.5030**
-  - Precision: **0.7090**
-  - Recall: **0.3897**
-- Under simulated recession-era shift, the pre-retrain baseline degraded on unseen shifted data to **0.5416 ROC-AUC / 0.8443 PR-AUC / 0.5245 F1**.
-- A fresh local rerun of the drift-aware retraining flow recovered shifted-distribution performance to **0.6535 ROC-AUC / 0.8948 PR-AUC / 0.9044 F1** while also restoring historical ROC-AUC to **0.7546**.
-- Protected production with acceptance criteria so retraining does not blindly replace the model.
+- Never retraining cost **0.015–0.021 PR-AUC** (about 5–7%). Retraining clearly matters.
+- **Monthly scheduled retraining was best** in 103 of 105 paired comparisons. Quarterly retraining got within 0.001 of it with 11 retrains instead of 35.
+- Per-feature KS tests and a domain classifier **alarmed in about 35 of 36 months**, so drift-triggered retraining turned into a 2-month schedule limited by its cooldown: same quality as quarterly, about 60% more retrains. PSI ≥ 0.1 stayed quiet and kept less than half of the benefit.
+- In a controlled benchmark with known drift onsets, input-only tests caught input drift in 0–2 batches but were **blind to concept drift** (no better than chance). A label-based calibration test caught concept drift exactly one label delay late, and its alarms were followed by real harm 89–97% of the time. Input-drift alarms were followed by harm 0% of the time.
 
-### Baseline Performance
+Full write-up, figures and caveats: **[docs/EXPERIMENT.md](docs/EXPERIMENT.md)**
 
-Current promoted artifact on the original non-shifted test set:
+![Shortfall vs hindsight by policy](docs/figures/policy_pr_auc_over_time.png)
 
-| Metric | Value |
-| --- | ---: |
-| ROC-AUC | 0.7495 |
-| PR-AUC | 0.6644 |
-| F1 | 0.5030 |
-| Precision | 0.7090 |
-| Recall | 0.3897 |
-| Log Loss | 0.5694 |
+```bash
+pip install -r requirements-experiments.txt
+curl -L -o data/raw/lending_club.csv "https://zenodo.org/api/records/11295916/files/LC_loans_granting_model_dataset.csv/content"
+bash experiments/run_all.sh && python -m experiments.make_report
+```
 
-### Performance Under Distribution Shift
+### Rules for when a model goes live
 
-The table below summarizes a fresh local rerun of the pipeline with the updated imbalance handling, threshold optimization, and retraining gates.
+Shared by the experiment and the production pipeline below:
 
-| Model State | Historical ROC-AUC | Historical PR-AUC | Historical F1 | Shifted ROC-AUC | Shifted PR-AUC | Shifted F1 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Pre-retrain baseline | 0.4553 | 0.3726 | 0.3953 | 0.5416 | 0.8443 | 0.5245 |
-| Post-retrain weighted candidate | 0.7546 | 0.6663 | 0.6057 | 0.6535 | 0.8948 | 0.9044 |
+- **Promotion gate:** a retrained model is promoted only if it beats the current model on the newest labeled data and doesn't get worse on older held-out data ([src/promotion.py](src/promotion.py)).
+- **Noise guard:** a cooldown after each retrain plus a minimum number of newly labeled rows, so the system can't retrain on noise.
+- **Rollback:** every candidate is registered in MLflow; `champion` / `previous_champion` aliases make rollback one step: `python rollback.py --model-name bank_marketing_xgboost --restore-serving-files`, then `POST /reload`.
 
-This is the intended story for the system: the promoted model is healthy in-distribution, recession-style covariate and concept shift reduce quality on unseen shifted data, and the retraining pipeline recovers performance without dropping the historical guardrail.
+---
+
+# The pipeline
+
+The system the experiment's rules plug into: binary classification on UCI Bank Marketing, with online serving, drift monitoring, and conditional retraining.
 
 ## What This System Does
 
@@ -76,10 +69,12 @@ This is the intended story for the system: the promoted model is healthy in-dist
 ├── train.py
 ├── monitor.py
 ├── retrain.py
+├── rollback.py
 ├── generate_recession_data.py
 ├── simulate_traffic.py
 ├── docker-compose.yml
 ├── src/
+├── experiments/          # drift-vs-schedule experiment (see docs/EXPERIMENT.md)
 ├── airflow/dags/
 ├── grafana/
 ├── prometheus/
@@ -152,10 +147,17 @@ docker compose exec -T trainer python /app/retrain.py \
 ## Quality Gates (Promotion Policy)
 
 Retrained candidate is accepted only when:
-- It improves unseen shifted-distribution PR-AUC by at least `0.005`, and
-- It does not degrade historical ROC-AUC by more than `0.03`.
+- It beats the current model's PR-AUC on the newest labeled (shifted) holdout by more than `RETRAIN_IMPROVEMENT_THRESHOLD` (default `0.005`), and
+- It does not degrade historical ROC-AUC by more than `DEGRADATION_THRESHOLD` (default `0.03`).
 
-PR-AUC is used for the improvement check because the shifted holdout is class-imbalanced; ROC-AUC remains the historical degradation guard.
+A drift-triggered retrain is skipped (unless `--force`) within `RETRAIN_COOLDOWN_HOURS` (default `48`) of the last promotion, or when fewer than `MIN_NEW_LABELED_ROWS` (default `1000`) new labeled rows are available.
+
+Every candidate is registered as a version of `MLFLOW_REGISTERED_MODEL_NAME`; accepted ones take the `champion` alias and the replaced model keeps `previous_champion`. Roll back with:
+
+```bash
+docker compose exec -T trainer python /app/rollback.py --model-name bank_marketing_xgboost --restore-serving-files
+curl -X POST http://localhost:8000/reload
+```
 
 ## Validation
 
