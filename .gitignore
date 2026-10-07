@@ -39,6 +39,7 @@ models/
 logs/
 reports/
 data/processed/
+results/
 
 # ----------------------------
 # Airflow / local db / pid
