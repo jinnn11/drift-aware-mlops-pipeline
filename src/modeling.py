@@ -42,6 +42,26 @@ def build_xgboost_pipeline(preprocessor, scale_pos_weight: float = 1.0) -> Pipel
     )
 
 
+# Fixed hyperparameters for the drift experiments: every policy trains the same model
+# family with the same settings so retrain counts are a fair compute proxy.
+FIXED_PARAMS = {
+    "model__n_estimators": 300,
+    "model__max_depth": 4,
+    "model__learning_rate": 0.05,
+    "model__subsample": 0.8,
+    "model__colsample_bytree": 0.8,
+    "model__tree_method": "hist",
+}
+
+
+def build_fixed_pipeline(x_train: pd.DataFrame, n_jobs: int = -1) -> Pipeline:
+    from src.features import build_preprocessor
+
+    pipeline = build_xgboost_pipeline(build_preprocessor(x_train))
+    pipeline.set_params(**FIXED_PARAMS, model__n_jobs=n_jobs)
+    return pipeline
+
+
 def train_with_cv(
     x_train: pd.DataFrame,
     y_train,
