@@ -2,7 +2,7 @@
 
 **Question.** When labels arrive late, does retraining when drift is detected beat retraining on a fixed schedule, and at what compute cost?
 
-**Answer, on 36 months of Lending Club loans: no.** Retraining at all clearly matters: a model that is never retrained ends up 0.015–0.021 PR-AUC (about 5–7%) behind. Monthly scheduled retraining was the best policy in 103 of 105 paired comparisons (7 other policies × 3 label delays × 5 seeds). Drift-triggered policies matched a *quarterly* schedule at best, and they needed up to 60% more retrains to get there. The input-drift tests alarmed in almost every month, so with a cooldown they behaved like a fixed schedule anyway. The one effect-size rule that stayed quiet (PSI ≥ 0.1) kept less than half of the benefit of retraining.
+**Answer, on 36 months of Lending Club loans: no.** Retraining at all clearly matters: a model that is never retrained ends up 0.015–0.021 PR-AUC (5–7.5%) behind. In dollars: if the lender declines the riskiest 10% of requested dollars each month, retraining declines **$8–14M more in loans that later defaulted** over $4.2B of applications, and approves about as much more in loans that were repaid. Monthly scheduled retraining was the best policy in 101 of 105 paired comparisons (7 other policies × 3 label delays × 5 seeds), but only by tiny margins: a **quarterly schedule kept 98–102% of its dollar gain with 11 retrains instead of 34–35**. Drift-triggered policies matched quarterly at best. The input-drift tests alarmed in almost every month, so with a cooldown they behaved like a fixed schedule anyway, and they needed about 60% more retrains than quarterly (17–18 vs 11) to get there. The one effect-size rule that stayed quiet (PSI ≥ 0.1) kept only 62–80% of the dollar gain.
 
 The controlled benchmark explains why. Input-drift alarms don't predict harm: here, input drift was fully detectable and did not hurt the model. Concept drift did hurt, and only a test that uses labels could see it.
 
@@ -53,34 +53,34 @@ A loan issued in month *s* gets its label at the end of month *s + d*, where *d*
 
 ![PR-AUC over time](figures/policy_pr_auc_over_time.png)
 
-The top panel is dominated by the rising default rate: PR-AUC climbs with prevalence even for a fixed model. The bottom panel removes that by plotting each policy's shortfall against the hindsight model. The never-retrained model falls steadily behind. PSI ≥ 0.1 fires early, then stays quiet while the gap reopens in late 2014. Monthly and KS-triggered retraining stay within about 0.005 of the hindsight reference.
+The top panel is dominated by the rising default rate: PR-AUC climbs with prevalence even for a fixed model. The bottom panel removes that by plotting each policy's shortfall against the hindsight model. The never-retrained model falls steadily behind. PSI ≥ 0.1 fires early, then stays quiet while the gap reopens from mid-2014. Monthly and KS-triggered retraining stay within about 0.006 of the hindsight reference.
 
 **Label delay 3 months, mean ± sd over 5 seeds**
 
 | Policy | Mean PR-AUC | Gap to hindsight | Retrains (cost) | Promoted | Drift alarms | Blocked by cooldown |
 |---|---:|---:|---:|---:|---:|---:|
-| Never retrain | 0.2687 ± 0.0014 | 0.0182 | 0 | 0 | – | – |
-| **Scheduled, monthly** | **0.2841 ± 0.0019** | **0.0028** | 35 | 21.8 | – | – |
-| Scheduled, quarterly | 0.2832 ± 0.0020 | 0.0037 | 11 | 7.6 | – | – |
-| Drift: KS / chi-square | 0.2832 ± 0.0017 | 0.0037 | 17.8 | 12.8 | 35.6 / 36 months | 16.8 |
-| Drift: PSI ≥ 0.1 | 0.2775 ± 0.0016 | 0.0094 | 3.6 | 2.8 | 4.8 | 1.2 |
-| Drift: domain classifier (p < 0.05) | 0.2832 ± 0.0017 | 0.0037 | 18.0 | 13.0 | 35.6 | 16.6 |
-| Drift: domain classifier (AUC ≥ 0.55) | 0.2829 ± 0.0019 | 0.0040 | 14.2 | 9.4 | 25.2 | 10.8 |
-| Labels: calibration test | 0.2834 ± 0.0017 | 0.0035 | 12.4 | 9.8 | 20.0 | 7.2 |
+| Never retrain | 0.2685 ± 0.0016 | 0.0183 | 0 | 0 | – | – |
+| **Scheduled, monthly** | **0.2840 ± 0.0017** | **0.0028** | 35 | 20.8 | – | – |
+| Scheduled, quarterly | 0.2834 ± 0.0014 | 0.0034 | 11 | 8.2 | – | – |
+| Drift: KS / chi-square | 0.2837 ± 0.0017 | 0.0031 | 18.0 | 12.2 | 35.8 / 36 months | 16.8 |
+| Drift: PSI ≥ 0.1 | 0.2775 ± 0.0020 | 0.0093 | 3.6 | 2.8 | 5.0 | 1.4 |
+| Drift: domain classifier (p < 0.05) | 0.2837 ± 0.0017 | 0.0031 | 18.0 | 12.2 | 36.0 | 17.0 |
+| Drift: domain classifier (AUC ≥ 0.55) | 0.2834 ± 0.0018 | 0.0034 | 14.2 | 9.8 | 24.4 | 10.0 |
+| Labels: calibration test | 0.2833 ± 0.0018 | 0.0035 | 12.2 | 9.0 | 20.8 | 8.2 |
 
 **Paired against monthly scheduled retraining** (same seed, same stream, so the noise largely cancels):
 
 | Policy | Δ PR-AUC, delay 1 | Δ PR-AUC, delay 3 | Δ PR-AUC, delay 6 |
 |---|---:|---:|---:|
-| Never retrain | −0.0150 ± 0.0019 | −0.0154 ± 0.0017 | −0.0213 ± 0.0041 |
-| Scheduled, quarterly | −0.0008 ± 0.0006 | −0.0009 ± 0.0007 | −0.0014 ± 0.0003 |
-| Drift: KS / chi-square | −0.0004 ± 0.0004 | −0.0009 ± 0.0007 | −0.0006 ± 0.0003 |
-| Drift: PSI ≥ 0.1 | −0.0066 ± 0.0020 | −0.0066 ± 0.0009 | −0.0055 ± 0.0020 |
-| Drift: domain classifier (p < 0.05) | −0.0004 ± 0.0004 | −0.0009 ± 0.0008 | −0.0006 ± 0.0003 |
-| Drift: domain classifier (AUC ≥ 0.55) | −0.0011 ± 0.0004 | −0.0012 ± 0.0006 | −0.0007 ± 0.0005 |
-| Labels: calibration test | −0.0005 ± 0.0004 | −0.0007 ± 0.0004 | −0.0012 ± 0.0002 |
+| Never retrain | −0.0150 ± 0.0021 | −0.0156 ± 0.0014 | −0.0210 ± 0.0033 |
+| Scheduled, quarterly | −0.0006 ± 0.0003 | −0.0007 ± 0.0005 | −0.0009 ± 0.0004 |
+| Drift: KS / chi-square | −0.0004 ± 0.0003 | −0.0003 ± 0.0001 | −0.0004 ± 0.0002 |
+| Drift: PSI ≥ 0.1 | −0.0068 ± 0.0019 | −0.0066 ± 0.0007 | −0.0052 ± 0.0019 |
+| Drift: domain classifier (p < 0.05) | −0.0003 ± 0.0003 | −0.0003 ± 0.0001 | −0.0004 ± 0.0002 |
+| Drift: domain classifier (AUC ≥ 0.55) | −0.0006 ± 0.0005 | −0.0006 ± 0.0002 | −0.0006 ± 0.0002 |
+| Labels: calibration test | −0.0004 ± 0.0005 | −0.0007 ± 0.0003 | −0.0007 ± 0.0003 |
 
-Monthly retraining came out ahead in 103 of the 105 seed-by-policy-by-delay comparisons. The two exceptions were each under 0.0003 PR-AUC.
+Monthly retraining came out ahead in 101 of the 105 seed-by-policy-by-delay comparisons. The four exceptions were all at a 1-month delay, each by under 0.00015 PR-AUC.
 
 ![Cost vs quality](figures/cost_vs_quality.png)
 
@@ -88,13 +88,37 @@ Monthly retraining came out ahead in 103 of the 105 seed-by-policy-by-delay comp
 
 ### What this says
 
-1. **Retraining matters; *when* matters much less.** Never retraining costs about 0.015 PR-AUC, rising to 0.021 with a 6-month delay. Every policy that retrains at least about every 3 months recovers 92–95% of that. Among them, the spread is under 0.0015 PR-AUC.
-2. **Significance-based drift tests fire in almost every month.** With 5,000 rows a month, KS and the p-value domain classifier find *some* real difference from the training window every time (they alarmed in about 35 of 36 months). The cooldown is what limits retrains. The result is effectively a 2-month schedule: about 18 retrains for the same PR-AUC that quarterly scheduling gets with 11.
-3. **Effect-size thresholds go quiet too early.** PSI ≥ 0.1 alarmed about 4 times in 36 months. The slow drift over 2014–15 never moved any single feature's PSI past 0.1, yet it cost the stale model about 0.01–0.02 PR-AUC. The AUC ≥ 0.55 floor sits between the two extremes and does no better than the schedule.
-4. **The label-based trigger was the most cost-efficient drift policy** (12.4 retrains, −0.0007), roughly tied with quarterly scheduling. That fits the benchmark below: it is the only trigger that measures the thing retraining fixes.
-5. **The gate did real work.** About 13 of 35 monthly candidates were rejected because they didn't beat the champion on the newest labeled month. No candidate was ever rejected for regressing on older data.
+1. **Retraining matters; *when* matters much less.** Never retraining costs about 0.015 PR-AUC, rising to 0.021 with a 6-month delay. Every policy that retrains at least about every 3 months recovers 95–98% of that. Among them, the spread is under 0.001 PR-AUC.
+2. **Significance-based drift tests fire in almost every month.** With 5,000 rows a month, KS and the p-value domain classifier find *some* real difference from the training window every time (they alarmed in 35–36 of 36 months). The cooldown is what limits retrains. The result is effectively a 2-month schedule: 17–18 retrains for the same PR-AUC that quarterly scheduling gets with 11, about 60% more.
+3. **Effect-size thresholds go quiet too early.** PSI ≥ 0.1 alarmed only 3–8 times in 36 months, almost all of them in 2013. The slow drift over 2014–15 pushed a feature's PSI past 0.1 at most once per run, yet it cost the stale model about 0.01–0.02 PR-AUC. The AUC ≥ 0.55 floor sits between the two extremes and does no better than the schedule.
+4. **The label-based trigger was the most cost-efficient drift policy** (12.2 retrains, −0.0007 at a 3-month delay), roughly tied with quarterly scheduling. That fits the benchmark below: it is the only trigger that measures the thing retraining fixes.
+5. **The gate did real work.** About 13–14 of 35 monthly candidates were rejected because they didn't beat the champion on the newest labeled month. No candidate was ever rejected for regressing on older data.
 
-**Bottom line for this data:** a monthly or quarterly schedule is as good as or better than drift triggers, and it is predictable. Detection would pay off only where drift comes in rare, discrete shocks *and* retraining is expensive. Neither held here.
+### In dollars: a simple lending rule
+
+A PR-AUC gap of 0.001 is hard to picture, so the replay also applies a lending rule to each policy's deployed model ([src/lending_value.py](../src/lending_value.py)). Each month the lender turns down the riskiest applications by model score until 10% of the month's requested dollars are declined, and funds the rest. Every policy declines the same dollars, so the only difference between policies is how much of that budget lands on loans that later defaulted instead of loans that were repaid. Each seed replays about 286,000 applications for $4.2B; 19.3% of those dollars went to loans that later defaulted.
+
+**Extra dollars of later-defaulted loans declined compared with never retraining**, over the whole replay, mean ± sd over 5 seeds (paired by seed):
+
+| Policy | Retrains (delay 1 / 3 / 6) | Delay 1 | Delay 3 | Delay 6 |
+|---|---:|---:|---:|---:|
+| Never retrain | 0 | – | – | – |
+| Scheduled, monthly | 35 / 35 / 34 | +$8.4M ± 2.4M | +$8.1M ± 0.7M | +$13.6M ± 2.5M |
+| **Scheduled, quarterly** | 11 / 11 / 11 | +$8.3M ± 1.9M | +$7.9M ± 0.9M | +$13.8M ± 2.3M |
+| Drift: KS / chi-square | 17.8 / 18 / 17 | +$8.0M ± 2.3M | +$7.9M ± 1.0M | +$13.7M ± 2.4M |
+| Drift: PSI ≥ 0.1 | 2.8 / 3.6 / 4.6 | +$5.2M ± 2.3M | +$5.4M ± 0.9M | +$10.9M ± 2.9M |
+| Drift: domain classifier (p < 0.05) | 17.8 / 18 / 17 | +$8.1M ± 2.3M | +$7.9M ± 1.0M | +$13.7M ± 2.4M |
+| Drift: domain classifier (AUC ≥ 0.55) | 11.8 / 14.2 / 15.8 | +$7.7M ± 2.2M | +$7.8M ± 0.9M | +$13.6M ± 2.4M |
+| Labels: calibration test | 12.2 / 12.2 / 12.6 | +$7.7M ± 2.4M | +$8.5M ± 0.7M | +$13.6M ± 2.5M |
+
+- **Retraining pays in dollars too.** Every retraining policy beat never retraining on every seed and every delay. Because the decline budget is fixed, each extra later-defaulted dollar declined is (to within one loan a month) a repaid dollar approved instead. The never-retrained model's declines were 32–34% later-defaulted dollars; the retrained models' were about 35%.
+- **Quarterly kept 98–102% of monthly's gain** with 11 retrains instead of 34–35. Paired by seed, quarterly minus monthly is −$0.1M to +$0.2M, well inside the seed-to-seed spread.
+- **Drift triggers bought nothing extra.** KS and the p-value domain classifier landed within 5% of monthly with 17–18 retrains. The calibration trigger was the best policy at a 3-month delay (+$8.5M) but not at the other two.
+- **PSI ≥ 0.1 left $2.7–3.2M on the table** compared with monthly (it kept 62–80% of the gain), because it stopped firing while the drift kept building.
+- The picture is the same with 5% and 20% decline budgets: quarterly keeps 94–102% and 97–100% of monthly's gain, and PSI trails every other retraining policy. `python -m experiments.make_report` prints all three tables, per $1B of applications.
+- **Caveat:** the source has requested loan amounts but no repayment or recovery amounts, so these are dollars of loans that later defaulted, not realized losses. The budget is in dollars rather than in applications on purpose: declining a fixed *share of applications* rewards a model that ranks bigger loans as riskier, because it then declines more dollars of both kinds.
+
+**Bottom line for this data:** a monthly or quarterly schedule is as good as or better than drift triggers, in PR-AUC and in dollars, and it is predictable. Quarterly is the better buy: the same dollars for a third of the retrains. Detection would pay off only where drift comes in rare, discrete shocks *and* retraining is expensive. Neither held here.
 
 ---
 
@@ -164,12 +188,12 @@ Section 2's policies retrain right after alarming, which hides whether the alarm
 
 | Label delay | Detector | Alarm months / 35 | Alarms followed by harm | Harmful months caught | First alarm | First harmful month |
 |---:|---|---:|---:|---:|---|---|
-| 3 | KS / chi-square | 35.0 | 47% | 100% | 2013-01 | 2014-05 |
-| 3 | PSI ≥ 0.1 | 35.0 | 47% | 100% | 2013-01 | 2014-05 |
-| 3 | Domain classifier (either rule) | 35.0 | 47% | 100% | 2013-01 | 2014-05 |
-| 3 | Calibration (labels) | 31.0 | 44% | 83% | 2013-01 | 2014-05 |
+| 3 | KS / chi-square | 35.0 | 52% | 100% | 2013-01 | 2014-05 |
+| 3 | PSI ≥ 0.1 | 35.0 | 52% | 100% | 2013-01 | 2014-05 |
+| 3 | Domain classifier (either rule) | 35.0 | 52% | 100% | 2013-01 | 2014-05 |
+| 3 | Calibration (labels) | 31.4 | 47% | 81% | 2013-01 | 2014-05 |
 
-Against a model trained on 2011–12 data, every detector alarms from the first replay month, **16 months before** the model falls meaningfully behind. Alarm precision (about 47%) equals the share of months that turned out harmful: on this stream the alarms say "the data is different", which is always true, not "the model is worse". In shadow mode PSI ≥ 0.1 alarms constantly, unlike in the PSI policy. That is because the reference here is the old 2011–12 window; when the policy retrains, its reference resets to recent data.
+Against a model trained on 2011–12 data, every detector alarms from the first replay month, **16 months before** the model falls meaningfully behind. Alarm precision (about 52%) equals the share of months that turned out harmful: on this stream the alarms say "the data is different", which is always true, not "the model is worse". In shadow mode PSI ≥ 0.1 alarms constantly, unlike in the PSI policy. That is because the reference here is the old 2011–12 window; when the policy retrains, its reference resets to recent data.
 
 ---
 
@@ -190,6 +214,7 @@ The replay can register everything for real: `--mlflow-uri sqlite:///results/mlf
 - **One dataset, one model family, one stretch of time.** 2013–15 Lending Club drift is slow and continuous. Markets with sudden regime changes (a rate shock, a policy change) could favor detection.
 - **Label delay is simulated.** Real loan outcomes arrive over months to years, and unevenly: early defaults arrive first. Uneven delays would hurt every policy, and they would make a label-based trigger even more biased toward early-default patterns.
 - **Censoring.** Only resolved loans are in the source, so recent vintages are biased (Section 1). The replay stops at 2015, but some of the late-2015 rise in the default rate is still an artifact.
+- **Dollars are requested amounts, not losses.** The lending rule counts the requested amount of loans that later defaulted. Partial repayment and recoveries make the realized loss smaller, and the source has neither.
 - **Weak feature set.** Without grade, interest rate or term, ROC-AUC is about 0.65. A stronger model might be hurt differently by the same drift.
 - **The hindsight reference is a reference, not a ceiling.** It retrains monthly with no delay but uses the same model and window.
 - **Seeds re-sample the same months,** so the ± values capture sampling noise, not uncertainty about what a different decade would look like.
@@ -208,12 +233,15 @@ bash experiments/run_all.sh                      # ~90 min on 8 CPU cores
 python -m experiments.make_report --results results --figures docs/figures
 ```
 
-Single runs: `python -m experiments.run_policy_comparison --label-delay 3 --seed 0` and `python -m experiments.run_detector_benchmark --seeds 10`. Each script's `--help` lists the knobs (cooldown, minimum new labels, gate tolerances, window, monthly cap).
+Single runs: `python -m experiments.run_policy_comparison --label-delay 3 --seed 0` and `python -m experiments.run_detector_benchmark --seeds 10`. Each script's `--help` lists the knobs (cooldown, minimum new labels, gate tolerances, window, monthly cap, threads per fit).
+
+The tables and figures in Section 2 and the shadow table in Section 3 come from one run (November 2026), the first to record the lending-rule dollars. Reruns can differ in the fourth decimal place: an October 2026 run, made before the dollar accounting was added, gave PR-AUCs within 0.0006 of these and monthly ahead in 103 of 105 comparisons instead of 101, with the same conclusions. Within one machine, results are identical whatever the thread count.
 
 | File | Role |
 |---|---|
 | [src/lending_club.py](../src/lending_club.py) | load, clean, monthly stream |
 | [src/replay.py](../src/replay.py) | time-ordered replay with delayed labels, policies, shadow monitor |
+| [src/lending_value.py](../src/lending_value.py) | the lending rule: dollars of later-defaulted and repaid loans declined |
 | [src/detectors.py](../src/detectors.py) | KS/chi-square, PSI, domain classifier, calibration test |
 | [src/drift_benchmark.py](../src/drift_benchmark.py) | injected drift scenarios and detection metrics |
 | [src/promotion.py](../src/promotion.py) | promotion gate and noise guard |

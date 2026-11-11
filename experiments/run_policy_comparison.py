@@ -61,6 +61,7 @@ def run(args: argparse.Namespace) -> None:
         gate=GateConfig(args.gate_min_improvement, args.gate_max_older_drop),
         guard=NoiseGuardConfig(args.cooldown, args.min_new_labels),
         seed=args.seed,
+        n_jobs=args.n_jobs,
     )
     data_start = pd.Period(args.replay_start, "M") - (args.train_window + args.label_delay + 1)
     frame = monthly_stream(load_lending_club(args.data_path), str(data_start), args.replay_end,
@@ -123,6 +124,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-shadow", action="store_true", help="skip the monitor-only alarm-quality pass")
     parser.add_argument("--mlflow-uri", default=None, help="e.g. sqlite:///mlflow.db to register every candidate")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--n-jobs", type=int, default=-1, help="threads per model fit (-1 = all cores)")
     parser.add_argument("--out-dir", default="results/policy_comparison")
     return parser.parse_args()
 

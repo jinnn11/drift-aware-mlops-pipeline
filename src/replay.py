@@ -23,6 +23,7 @@ import pandas as pd
 from sklearn.metrics import average_precision_score, roc_auc_score
 
 from src.lending_club import FEATURE_COLUMNS, MONTH_COLUMN, TARGET_COLUMN
+from src.lending_value import decline_rule_dollars
 from src.modeling import build_fixed_pipeline
 from src.promotion import GateConfig, NoiseGuardConfig, check_noise_guard, evaluate_gate
 
@@ -157,6 +158,7 @@ def run_policy(
             "roc_auc": float(roc_auc_score(month[TARGET_COLUMN], scores)),
             "champion": champion_id, "alarm": False, "detector_score": np.nan,
             "triggered": False, "blocked": "", "retrained": False, "promoted": False,
+            **decline_rule_dollars(month["loan_amnt"], month[TARGET_COLUMN], scores),
         }
 
         if policy.kind == "scheduled":
@@ -303,6 +305,10 @@ def _summarize(name, monthly, events, alarms, hindsight) -> Dict[str, float]:
         "alarms_scored": int(len(alarms)),
         "alarms_preceding_harm": int(alarms["harmful"].sum()) if len(alarms) else 0,
     }
+    # Lending-rule dollars, summed over the replay (see src/lending_value.py).
+    for col in monthly.columns:
+        if col.endswith("_dollars") or col.startswith(("defaulted_declined_", "good_declined_")):
+            summary[col] = float(monthly[col].sum())
     if hindsight is not None:
         gap = hindsight.reindex(pd.PeriodIndex(monthly["month"], freq="M")).to_numpy() - monthly["pr_auc"].to_numpy()
         summary["mean_gap_to_hindsight"] = float(np.mean(gap))

@@ -126,6 +126,36 @@ def paired_table(runs: dict, baseline: str = "scheduled_monthly") -> str:
     return "\n".join(lines)
 
 
+def dollar_table(runs: dict, rate: int = 10, baseline: str = "never") -> str:
+    """Lending rule with a dollar budget: each month, turn down the riskiest applications by the deployed
+    model's score until `rate`% of requested dollars is declined (src/lending_value.py).
+
+    Every policy declines the same dollars, so the comparison is how much of that budget lands on loans that
+    later charged off. Dollars are requested loan amounts (the data has no repayment or recovery amounts),
+    scaled to $1B of applications and paired by seed against `baseline` (same stream, same seed).
+    """
+    bad_col, good_col = f"defaulted_declined_usd_{rate}", f"good_declined_usd_{rate}"
+    lines = [f"| Delay | Policy | Retrains | Declined $ that later defaulted | Defaulted $ declined vs "
+             f"{POLICY_LABEL[baseline].lower()}, per $1B of applications | Seeds better |",
+             "|---:|---|---:|---:|---:|---:|"]
+    for delay, data in runs.items():
+        s = data["summary"]
+        if s.empty or bad_col not in s.columns:
+            continue
+        s = s.assign(precision=s[bad_col] / (s[bad_col] + s[good_col]), bad=s[bad_col] * 1e9 / s["loan_dollars"])
+        wide = {k: s.pivot(index="seed", columns="policy", values=k) for k in ["precision", "bad", "retrains"]}
+        for policy in [p for p in POLICY_ORDER if p in wide["bad"].columns]:
+            head = (f"| {delay} | {POLICY_LABEL[policy]} | {wide['retrains'][policy].mean():.1f} | "
+                    f"{wide['precision'][policy].mean():.2%} |")
+            if policy == baseline:
+                lines.append(head + " – | – |")
+                continue
+            diff = wide["bad"][policy] - wide["bad"][baseline]
+            lines.append(head + f" {diff.mean() / 1e6:+.2f}M ± {diff.std() / 1e6:.2f}M | "
+                         f"{int((diff > 0).sum())}/{len(diff)} |")
+    return "\n".join(lines)
+
+
 def gate_table(runs: dict) -> str:
     lines = ["| Delay | Policy | Retrains | Promoted | Rejected: no gain on recent | Rejected: worse on older |",
              "|---:|---|---:|---:|---:|---:|"]
@@ -304,8 +334,11 @@ def main() -> None:
     figures.mkdir(parents=True, exist_ok=True)
 
     runs = load_policy_runs(results)
-    sections = ["## Policy comparison", policy_table(runs), "", "## Paired differences", paired_table(runs),
-                "", "## Promotion gate outcomes", gate_table(runs), "", "## Shadow monitoring", shadow_table(runs)]
+    sections = ["## Policy comparison", policy_table(runs), "", "## Paired differences", paired_table(runs)]
+    for rate in (10, 5, 20):
+        sections += ["", f"## Lending rule in dollars: decline the riskiest {rate}% of requested dollars each month",
+                     dollar_table(runs, rate)]
+    sections += ["", "## Promotion gate outcomes", gate_table(runs), "", "## Shadow monitoring", shadow_table(runs)]
     if args.timeline_delay in runs and not runs[args.timeline_delay]["monthly"].empty:
         fig_policy_timeline(runs[args.timeline_delay], args.timeline_delay, args.timeline_policies.split(","),
                             figures / "policy_pr_auc_over_time.png")

@@ -4,9 +4,9 @@
 
 On 36 months of Lending Club loans (2013–2015), replayed month by month with labels arriving 1, 3 or 6 months late, **drift-triggered retraining did not beat a schedule**:
 
-- Never retraining cost **0.015–0.021 PR-AUC** (about 5–7%). Retraining clearly matters.
-- **Monthly scheduled retraining was best** in 103 of 105 paired comparisons. Quarterly retraining got within 0.001 of it with 11 retrains instead of 35.
-- Per-feature KS tests and a domain classifier **alarmed in about 35 of 36 months**, so drift-triggered retraining turned into a 2-month schedule limited by its cooldown: same quality as quarterly, about 60% more retrains. PSI ≥ 0.1 stayed quiet and kept less than half of the benefit.
+- Never retraining cost **0.015–0.021 PR-AUC** (5–7.5%). In dollars: if the lender declines the riskiest 10% of requested dollars each month, retraining declines **$8–14M more in loans that later defaulted** over $4.2B of applications, and approves about as much more in loans that were repaid.
+- **Monthly scheduled retraining was best** in 101 of 105 paired comparisons, but only by tiny margins: **quarterly retraining kept 98–102% of its dollar gain** (within 0.001 PR-AUC) with 11 retrains instead of 34–35.
+- Per-feature KS tests and a domain classifier **alarmed in 35–36 of 36 months**, so drift-triggered retraining turned into a 2-month schedule limited by its cooldown: same value as quarterly, about 60% more retrains (17–18 vs 11). PSI ≥ 0.1 stayed quiet and left $2.7–3.2M of the gain on the table.
 - In a controlled benchmark with known drift onsets, input-only tests caught input drift in 0–2 batches but were **blind to concept drift** (no better than chance). A label-based calibration test caught concept drift exactly one label delay late, and its alarms were followed by real harm 89–97% of the time. Input-drift alarms were followed by harm 0% of the time.
 
 Full write-up, figures and caveats: **[docs/EXPERIMENT.md](docs/EXPERIMENT.md)**
