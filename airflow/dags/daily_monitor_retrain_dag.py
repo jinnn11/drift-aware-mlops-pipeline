@@ -29,8 +29,10 @@ with DAG(
     catchup=False,
     tags=["ml", "monitoring", "retraining"],
 ) as dag:
-    extract_recent_data = BashOperator(
-        task_id="extract_recent_data",
+    # Demo stand-in for "outcomes that arrived since the last run": a labeled, synthetic
+    # recession-era slice. Retraining needs labels; the drift check below does not.
+    prepare_labeled_recent_data = BashOperator(
+        task_id="prepare_labeled_recent_data",
         bash_command=(
             "python /app/generate_recession_data.py "
             "--source-path /app/data/raw/bank-additional-full.csv "
@@ -43,9 +45,8 @@ with DAG(
     run_drift_monitor = BashOperator(
         task_id="run_drift_monitor",
         bash_command=(
-            "python /app/monitor.py "
-            "--dataset-path /app/data/processed/recession/recession_incoming_full.csv "
-            "--current-window-ratio 1.0"
+            # Drift check on the predictions the API actually served in the last 24 hours.
+            "python /app/monitor.py --source logs --since-hours 24"
         ),
     )
 
@@ -61,7 +62,8 @@ with DAG(
             "--dataset-path /app/data/raw/bank-additional-full.csv "
             "--new-data-path /app/data/processed/recession/recession_incoming_full.csv "
             "--new-data-holdout-ratio 0.2 "
-            "--new-data-weight 4.0"
+            "--new-data-weight 4.0 "
+            "--new-data-val-ratio 0.1"
         ),
     )
 
@@ -77,6 +79,6 @@ with DAG(
         bash_command="cat /app/reports/latest_monitor.json || true",
     )
 
-    extract_recent_data >> run_drift_monitor >> decide_retrain
+    prepare_labeled_recent_data >> run_drift_monitor >> decide_retrain
     decide_retrain >> publish_metrics
     decide_retrain >> retrain_model >> smoke_test_model >> promote_or_rollback >> publish_metrics

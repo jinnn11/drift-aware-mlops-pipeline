@@ -66,6 +66,10 @@ def prepare_features_and_target(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Seri
     return x, y
 
 
+def _split_bounds(n: int, train_ratio: float, val_ratio: float) -> Tuple[int, int]:
+    return int(n * train_ratio), int(n * (train_ratio + val_ratio))
+
+
 def time_ordered_split(
     x: pd.DataFrame,
     y: pd.Series,
@@ -75,9 +79,7 @@ def time_ordered_split(
     if len(x) != len(y):
         raise ValueError("x and y must have the same number of rows")
 
-    n = len(x)
-    train_end = int(n * train_ratio)
-    val_end = int(n * (train_ratio + val_ratio))
+    train_end, val_end = _split_bounds(len(x), train_ratio, val_ratio)
 
     return SplitData(
         x_train=x.iloc[:train_end].copy(),
@@ -87,3 +89,13 @@ def time_ordered_split(
         y_val=y.iloc[train_end:val_end].copy(),
         y_test=y.iloc[val_end:].copy(),
     )
+
+
+def time_ordered_frame_split(
+    df: pd.DataFrame,
+    train_ratio: float = 0.70,
+    val_ratio: float = 0.15,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Split raw rows (target included) at the same boundaries as `time_ordered_split`."""
+    train_end, val_end = _split_bounds(len(df), train_ratio, val_ratio)
+    return df.iloc[:train_end].copy(), df.iloc[train_end:val_end].copy(), df.iloc[val_end:].copy()

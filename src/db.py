@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from sqlalchemy import JSON, Column, DateTime, Float, Integer, MetaData, String, Table, create_engine, insert, select
 from sqlalchemy.engine import Engine
@@ -158,3 +158,25 @@ def get_best_historical_test_auc(engine: Engine) -> Optional[float]:
     with engine.begin() as conn:
         row = conn.execute(stmt).first()
     return float(row[0]) if row else None
+
+
+
+def fetch_logged_predictions(
+    engine: Engine,
+    since: Optional[datetime] = None,
+    limit: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Logged predictions (features, score, model version, time), newest first."""
+    stmt = select(
+        prediction_logs.c.ts,
+        prediction_logs.c.model_version,
+        prediction_logs.c.features,
+        prediction_logs.c.score,
+    ).order_by(prediction_logs.c.ts.desc())
+    if since is not None:
+        stmt = stmt.where(prediction_logs.c.ts >= since)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    with engine.begin() as conn:
+        rows = conn.execute(stmt).mappings().all()
+    return [dict(row) for row in rows]

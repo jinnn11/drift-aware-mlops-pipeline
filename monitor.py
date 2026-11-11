@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable
+from typing import Any, Dict, Iterable, Optional
 
 import pandas as pd
 from evidently.metric_preset import DataDriftPreset
@@ -12,7 +12,7 @@ from evidently.report import Report
 
 from src.config import get_settings
 from src.data import load_dataset, prepare_features_and_target
-from src.db import get_engine, init_db, log_monitor_run
+from src.db import fetch_logged_predictions, get_engine, init_db, log_monitor_run
 from src.registry import load_promoted_model, load_reference_data
 
 
@@ -55,22 +55,65 @@ def extract_drift_summary(report_dict: Dict[str, Any], total_features: int) -> D
 
 
 
-def run_monitoring(dataset_path: str, current_window_ratio: float = 0.3) -> dict:
+def _write_latest(settings, summary: dict) -> None:
+    Path(settings.report_dir).mkdir(parents=True, exist_ok=True)
+    (Path(settings.report_dir) / "latest_monitor.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+
+def run_monitoring(
+    dataset_path: Optional[str] = None,
+    current_window_ratio: float = 0.3,
+    source: str = "logs",
+    since: Optional[datetime] = None,
+    min_rows: int = 200,
+) -> dict:
+    """Compare recent data with the model's training data using Evidently.
+
+    source="logs": the predictions the API actually served, read back from PostgreSQL
+    (features and the model's score; no labels, because outcomes arrive later).
+    source="file": the tail of a labeled CSV, for offline checks (features, score and label).
+    """
     settings = get_settings()
 
     reference_df = load_reference_data(settings.reference_data_path)
     model, metadata = load_promoted_model(settings.model_path, settings.model_metadata_path)
     feature_columns = metadata["feature_columns"]
 
-    raw_df = load_dataset(dataset_path)
-    x, y = prepare_features_and_target(raw_df)
-    current_window = max(1000, int(len(x) * current_window_ratio))
+    engine = get_engine(settings.database_url)
+    init_db(engine)
 
-    current_df = x.tail(current_window).copy()
-    current_df["y"] = y.tail(current_window).values
-    current_df["pred_score"] = model.predict_proba(current_df[feature_columns])[:, 1]
+    if source == "logs":
+        logged = fetch_logged_predictions(engine, since=since)
+        if len(logged) < min_rows:
+            summary = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "source": source,
+                "rows": len(logged),
+                "status": "insufficient_data",
+                "detail": f"only {len(logged)} logged predictions since {since}; need {min_rows}",
+            }
+            _write_latest(settings, summary)
+            return summary
+        current_df = pd.DataFrame([row["features"] for row in logged])
+        current_df["pred_score"] = [float(row["score"]) for row in logged]
+        monitored_columns = feature_columns + ["pred_score"]
+    elif source == "file":
+        if not dataset_path:
+            raise ValueError("source='file' needs dataset_path")
+        raw_df = load_dataset(dataset_path)
+        x, y = prepare_features_and_target(raw_df)
+        current_window = max(1000, int(len(x) * current_window_ratio))
+        current_df = x.tail(current_window).copy()
+        current_df["y"] = y.tail(current_window).values
+        current_df["pred_score"] = model.predict_proba(current_df[feature_columns])[:, 1]
+        monitored_columns = feature_columns + ["pred_score", "y"]
+    else:
+        raise ValueError(f"Unknown source: {source}")
 
-    monitored_columns = feature_columns + ["pred_score", "y"]
+    missing = [col for col in monitored_columns if col not in current_df.columns]
+    if missing:
+        raise ValueError(f"Current data is missing monitored columns: {missing}")
+
     reference_view = reference_df[monitored_columns].copy()
     current_view = current_df[monitored_columns].copy()
 
@@ -86,8 +129,6 @@ def run_monitoring(dataset_path: str, current_window_ratio: float = 0.3) -> dict
     drift_ratio = summary["drifted_features"] / max(total_features, 1)
     status = "drifted" if drift_ratio >= settings.drift_threshold else "ok"
 
-    engine = get_engine(settings.database_url)
-    init_db(engine)
     run_id = log_monitor_run(
         engine=engine,
         drift_score=summary["drift_score"],
@@ -100,6 +141,8 @@ def run_monitoring(dataset_path: str, current_window_ratio: float = 0.3) -> dict
     latest_summary = {
         "run_id": run_id,
         "ts": datetime.now(timezone.utc).isoformat(),
+        "source": source,
+        "rows": len(current_df),
         "drift_score": summary["drift_score"],
         "drifted_features": summary["drifted_features"],
         "total_features": total_features,
@@ -107,24 +150,29 @@ def run_monitoring(dataset_path: str, current_window_ratio: float = 0.3) -> dict
         "status": status,
         "report_path": str(report_path),
     }
-    Path(settings.report_dir).mkdir(parents=True, exist_ok=True)
-    (Path(settings.report_dir) / "latest_monitor.json").write_text(
-        json.dumps(latest_summary, indent=2),
-        encoding="utf-8",
-    )
-
+    _write_latest(settings, latest_summary)
     return latest_summary
-
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run data/prediction drift monitoring with Evidently.")
-    parser.add_argument("--dataset-path", default=get_settings().dataset_path)
-    parser.add_argument("--current-window-ratio", type=float, default=0.3)
+    parser.add_argument("--source", choices=["logs", "file"], default="logs",
+                        help="logs: predictions the API served (from PostgreSQL); file: a labeled CSV")
+    parser.add_argument("--since-hours", type=float, default=24.0, help="logs: look back this many hours")
+    parser.add_argument("--min-rows", type=int, default=200, help="logs: minimum logged predictions to run")
+    parser.add_argument("--dataset-path", default=get_settings().dataset_path, help="file: labeled CSV")
+    parser.add_argument("--current-window-ratio", type=float, default=0.3, help="file: share of rows at the end")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    result = run_monitoring(args.dataset_path, args.current_window_ratio)
+    since = datetime.now(timezone.utc) - timedelta(hours=args.since_hours)
+    result = run_monitoring(
+        dataset_path=args.dataset_path,
+        current_window_ratio=args.current_window_ratio,
+        source=args.source,
+        since=since,
+        min_rows=args.min_rows,
+    )
     print(json.dumps(result, indent=2))

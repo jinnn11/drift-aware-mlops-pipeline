@@ -36,11 +36,25 @@ The system the experiment's rules plug into: binary classification on UCI Bank M
 ## What This System Does
 
 1. Trains and tracks an XGBoost classifier in MLflow.
-2. Serves predictions through FastAPI (`/predict`, `/health`, `/metrics`).
-3. Monitors data drift with Evidently and stores run summaries.
-4. Triggers retraining when drift crosses threshold.
-5. Retrains on historical + incoming labeled data, upweighting recent samples.
-6. Promotes candidate model only if quality gates pass.
+2. Serves predictions through FastAPI (`/predict`, `/health`, `/metrics`) and logs every prediction to PostgreSQL.
+3. Checks the logged predictions for drift with Evidently (inputs and the model's score; outcomes are not known yet when a prediction is served).
+4. Triggers retraining when enough columns drift.
+5. Retrains on historical + newly labeled data, upweighting the new rows.
+6. Promotes the candidate only if it beats the current model on rows neither model was trained or tuned on.
+
+## What a clean rerun shows (November 2026)
+
+An earlier version of `retrain.py` trained the new model on every historical row, including the rows it was then scored on and the original versions of the customers in the shifted test slice, and tuned its decision threshold on that same test slice. That inflated the reported gain (shifted ROC-AUC 0.54 to 0.65). After the fix ([src/retrain_data.py](src/retrain_data.py), tested in [tests/test_retrain_data.py](tests/test_retrain_data.py)), a local end-to-end rerun (train, synthetic recession, retrain, three phases of traffic through the API) gives:
+
+| Check | Result |
+|---|---|
+| Baseline trained on the first 70% of the time-ordered data | ROC-AUC 0.58 on the next 15%, **0.47** on the last 15% |
+| Subscription rate over time | 5.6% in the first 70%, 10.7% in the next 15%, 38.5% in the last 15% |
+| Retrained on the synthetic recession, scored on unseen shifted rows | ROC-AUC **0.533** vs the current model's 0.539; PR-AUC 0.841 vs 0.843 (base rate 0.826) |
+| Promotion gate | **Rejected** the retrained model (`no_gain_on_recent`) |
+| Drift check on 800 logged predictions per traffic phase | 16 of 20 columns drifted in all three phases, including "normal" traffic |
+
+What it means: the later months of this dataset are a different regime, so a model frozen on early data does worse than chance there, and an input-drift check fires on almost any recent traffic. The label-only phase looks exactly like the input-shift phase to the monitor, because the monitor sees inputs and scores, not outcomes. Retraining on the synthetic recession did not help on clean splits, and the gate correctly kept the current model. These are the same patterns the experiment above measures on real loan data.
 
 ## Architecture
 
@@ -57,8 +71,8 @@ The system the experiment's rules plug into: binary classification on UCI Bank M
 
 ### Key Workflows
 - **Training**: `train.py` -> logs runs/metrics -> promotes baseline model
-- **Monitoring**: `monitor.py` -> drift report HTML + JSON summary + DB entry
-- **Retraining**: `retrain.py` -> weighted training + unseen-shift evaluation + gated promotion
+- **Monitoring**: `monitor.py --source logs` -> reads the served predictions back from PostgreSQL -> drift report HTML + JSON summary + DB entry (`--source file` checks a labeled CSV instead)
+- **Retraining**: `retrain.py` -> weighted training on rows kept apart from every evaluation slice ([src/retrain_data.py](src/retrain_data.py)) + threshold tuned on a separate validation slice + gated promotion
 - **Automation**: `airflow/dags/daily_monitor_retrain_dag.py`
 
 ## Repository Layout
@@ -117,12 +131,21 @@ docker compose exec -T trainer python /app/generate_recession_data.py \
 
 ### Simulate Inference Traffic and Drift
 
+Sends three phases of traffic to the API (normal, a recession-style input shift, and a label-only change) and, after each phase, runs the drift check on the predictions the API logged during that phase.
+
 ```bash
 docker compose exec -T trainer python /app/simulate_traffic.py \
   --api-url http://api:8000/predict \
   --phase-seconds 60 \
-  --requests-per-second 1 \
-  --run-monitor-after-phase
+  --requests-per-second 5 \
+  --run-monitor-after-phase \
+  --monitor-min-rows 200
+```
+
+The nightly Airflow job runs the same check on the last 24 hours of logged predictions:
+
+```bash
+docker compose exec -T trainer python /app/monitor.py --source logs --since-hours 24
 ```
 
 ### Weighted Retraining + Promotion Decision
@@ -132,6 +155,7 @@ docker compose exec -T trainer python /app/retrain.py \
   --dataset-path /app/data/raw/bank-additional-full.csv \
   --new-data-path /app/data/processed/recession/recession_incoming_full.csv \
   --new-data-holdout-ratio 0.2 \
+  --new-data-val-ratio 0.1 \
   --new-data-weight 4.0
 ```
 
@@ -149,6 +173,8 @@ docker compose exec -T trainer python /app/retrain.py \
 Retrained candidate is accepted only when:
 - It beats the current model's PR-AUC on the newest labeled (shifted) holdout by more than `RETRAIN_IMPROVEMENT_THRESHOLD` (default `0.005`), and
 - It does not degrade historical ROC-AUC by more than `DEGRADATION_THRESHOLD` (default `0.03`).
+
+Both comparisons use rows neither model was trained or tuned on: the newest 20% of the new labeled data, and the last 15% of the historical data. The candidate trains on the first 70% of the historical rows (the baseline's training rows) plus the oldest 70% of the new rows, and its decision threshold is tuned on the 10% of new rows just before the evaluation slice.
 
 A drift-triggered retrain is skipped (unless `--force`) within `RETRAIN_COOLDOWN_HOURS` (default `48`) of the last promotion, or when fewer than `MIN_NEW_LABELED_ROWS` (default `1000`) new labeled rows are available.
 

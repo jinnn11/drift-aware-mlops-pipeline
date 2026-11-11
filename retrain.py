@@ -7,11 +7,9 @@ from pathlib import Path
 
 import mlflow
 import mlflow.sklearn
-import numpy as np
-import pandas as pd
 
 from src.config import get_settings
-from src.data import load_dataset, prepare_features_and_target, time_ordered_split
+from src.data import load_dataset, prepare_features_and_target
 from src.db import (
     get_best_historical_test_auc,
     get_engine,
@@ -27,6 +25,7 @@ from src.mlflow_registry import MlflowChampionRegistry
 from src.policy import should_retrain
 from src.promotion import GateConfig, NoiseGuardConfig, check_noise_guard, evaluate_gate
 from src.registry import load_promoted_model, save_promoted_model, save_reference_data
+from src.retrain_data import build_retrain_data
 
 
 def _log_metrics(prefix: str, metrics: dict | None) -> None:
@@ -57,32 +56,13 @@ def run_smoke_test(dataset_path: str) -> dict:
     }
 
 
-def _split_recent_labeled_data(df: pd.DataFrame, holdout_ratio: float) -> tuple[pd.DataFrame, pd.DataFrame]:
-    eval_rows = max(300, int(len(df) * holdout_ratio))
-    if len(df) <= eval_rows:
-        raise ValueError("Recent labeled dataset is too small for requested holdout ratio")
-    recent_train = df.iloc[:-eval_rows].copy()
-    recent_eval = df.iloc[-eval_rows:].copy()
-    return recent_train, recent_eval
-
-
-def _combine_historical_and_recent(
-    historical_df: pd.DataFrame,
-    recent_train_df: pd.DataFrame,
-    recent_weight: float,
-) -> tuple[pd.DataFrame, np.ndarray]:
-    combined_df = pd.concat([historical_df, recent_train_df], axis=0, ignore_index=True)
-    weights = np.ones(len(combined_df), dtype=float)
-    weights[len(historical_df) :] = float(recent_weight)
-    return combined_df, weights
-
-
 def run_retrain(
     dataset_path: str,
     force: bool = False,
     new_data_path: str | None = None,
     new_data_holdout_ratio: float = 0.2,
     new_data_weight: float = 3.0,
+    new_data_val_ratio: float = 0.1,
 ) -> dict:
     settings = get_settings()
     engine = get_engine(settings.database_url)
@@ -105,16 +85,18 @@ def run_retrain(
             }
 
     historical_df = load_dataset(dataset_path)
-    historical_x, historical_y = prepare_features_and_target(historical_df)
-    historical_split = time_ordered_split(historical_x, historical_y)
+    recent_full_df = None
+    if new_data_path and Path(new_data_path).exists():
+        recent_full_df = load_dataset(new_data_path)
 
-    recent_train_df = None
-    recent_eval_df = None
-    if new_data_path:
-        path_obj = Path(new_data_path)
-        if path_obj.exists():
-            recent_full_df = load_dataset(str(path_obj))
-            recent_train_df, recent_eval_df = _split_recent_labeled_data(recent_full_df, new_data_holdout_ratio)
+    # The candidate never trains on the rows it is scored on: see src/retrain_data.py.
+    data = build_retrain_data(
+        historical_df,
+        recent_full_df,
+        holdout_ratio=new_data_holdout_ratio,
+        val_ratio=new_data_val_ratio,
+        recent_weight=new_data_weight,
+    )
 
     if not force:
         # Noise guard: no retrain within the cooldown after the last promotion, and none
@@ -127,25 +109,14 @@ def run_retrain(
             hours_since = (datetime.now(timezone.utc) - last_trained).total_seconds() / 3600
         allowed, guard_reason = check_noise_guard(
             periods_since_last_retrain=hours_since,
-            new_labeled_rows=0 if recent_train_df is None else len(recent_train_df) + len(recent_eval_df),
+            new_labeled_rows=data.new_labeled_rows,
             config=NoiseGuardConfig(settings.retrain_cooldown_hours, settings.min_new_labeled_rows),
         )
         if not allowed:
             return {"status": "skipped", "reason": guard_reason, "hours_since_last_promotion": hours_since}
 
-    if recent_train_df is not None:
-        combined_df, sample_weights = _combine_historical_and_recent(
-            historical_df=historical_df,
-            recent_train_df=recent_train_df,
-            recent_weight=new_data_weight,
-        )
-        training_mode = "historical_plus_recent_weighted"
-    else:
-        combined_df = historical_df.copy()
-        sample_weights = np.ones(len(combined_df), dtype=float)
-        training_mode = "historical_only"
-
-    train_x, train_y = prepare_features_and_target(combined_df)
+    training_mode = data.training_mode
+    train_x, train_y = prepare_features_and_target(data.train_df)
     preprocessor = build_preprocessor(train_x)
     scale_pos_weight = compute_scale_pos_weight(train_y)
     candidate_model, best_params, cv_score = train_with_cv(
@@ -153,25 +124,27 @@ def run_retrain(
         y_train=train_y,
         preprocessor=preprocessor,
         scale_pos_weight=scale_pos_weight,
-        sample_weight=sample_weights,
+        sample_weight=data.sample_weights,
     )
 
+    hist_test_x, hist_test_y = prepare_features_and_target(data.historical_test)
     candidate_recent_metrics = None
     recent_eval_x = None
     recent_eval_y = None
-    if recent_eval_df is not None:
-        recent_eval_x, recent_eval_y = prepare_features_and_target(recent_eval_df)
-
-    threshold_x = recent_eval_x if recent_eval_x is not None else historical_split.x_val
-    threshold_y = recent_eval_y if recent_eval_y is not None else historical_split.y_val
+    if data.recent_eval is not None:
+        recent_eval_x, recent_eval_y = prepare_features_and_target(data.recent_eval)
+        # Tune the decision threshold on a validation slice, never on the evaluation slice.
+        threshold_x, threshold_y = prepare_features_and_target(data.recent_val)
+    else:
+        threshold_x, threshold_y = prepare_features_and_target(data.historical_val)
     candidate_optimal_threshold = find_optimal_threshold(
         threshold_y,
         candidate_model.predict_proba(threshold_x)[:, 1],
     )
     candidate_hist_metrics = evaluate_probabilistic_classifier(
         candidate_model,
-        historical_split.x_test,
-        historical_split.y_test,
+        hist_test_x,
+        hist_test_y,
         threshold=candidate_optimal_threshold,
     )
     if recent_eval_x is not None and recent_eval_y is not None:
@@ -190,8 +163,8 @@ def run_retrain(
         current_threshold = float(current_metadata.get("optimal_threshold", 0.5))
         current_metrics = evaluate_probabilistic_classifier(
             current_model,
-            historical_split.x_test,
-            historical_split.y_test,
+            hist_test_x,
+            hist_test_y,
             threshold=current_threshold,
         )
         current_auc = current_metrics["roc_auc"]
@@ -241,8 +214,11 @@ def run_retrain(
         mlflow.log_param("retrain_trigger", "drift")
         mlflow.log_param("force_retrain", force)
         mlflow.log_param("training_mode", training_mode)
-        mlflow.log_param("historical_rows", len(historical_df))
-        mlflow.log_param("recent_rows", len(recent_train_df) if recent_train_df is not None else 0)
+        mlflow.log_param("historical_train_rows", data.historical_train_rows)
+        mlflow.log_param("recent_train_rows", data.recent_train_rows)
+        mlflow.log_param("historical_test_rows", len(data.historical_test))
+        mlflow.log_param("recent_eval_rows", 0 if data.recent_eval is None else len(data.recent_eval))
+        mlflow.log_param("recent_val_ratio", float(new_data_val_ratio))
         mlflow.log_param("recent_weight", float(new_data_weight))
         mlflow.log_param("scale_pos_weight", scale_pos_weight)
         for key, value in best_params.items():
@@ -336,6 +312,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--new-data-path", default="data/processed/recession/recession_incoming_full.csv")
     parser.add_argument("--new-data-holdout-ratio", type=float, default=0.2)
     parser.add_argument("--new-data-weight", type=float, default=3.0)
+    parser.add_argument("--new-data-val-ratio", type=float, default=0.1,
+                        help="share of the new labeled rows used only to tune the decision threshold")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--smoke-test", action="store_true")
     return parser.parse_args()
@@ -352,5 +330,6 @@ if __name__ == "__main__":
             new_data_path=args.new_data_path,
             new_data_holdout_ratio=args.new_data_holdout_ratio,
             new_data_weight=args.new_data_weight,
+            new_data_val_ratio=args.new_data_val_ratio,
         )
     print(json.dumps(result, indent=2))

@@ -2,7 +2,7 @@ import pytest
 
 pd = pytest.importorskip("pandas")
 
-from src.data import EXPECTED_COLUMNS, prepare_features_and_target, time_ordered_split
+from src.data import EXPECTED_COLUMNS, prepare_features_and_target, time_ordered_frame_split, time_ordered_split
 
 
 
@@ -59,3 +59,15 @@ def test_time_ordered_split_shapes():
     assert len(split.x_train) == 14
     assert len(split.x_val) == 3
     assert len(split.x_test) == 3
+
+
+
+def test_frame_split_uses_the_same_boundaries_as_feature_split():
+    df = _sample_df(20)
+    x, y = prepare_features_and_target(df)
+    split = time_ordered_split(x, y)
+    train_df, val_df, test_df = time_ordered_frame_split(df)
+
+    assert list(train_df.index) == list(split.x_train.index)
+    assert list(val_df.index) == list(split.x_val.index)
+    assert list(test_df.index) == list(split.x_test.index)
